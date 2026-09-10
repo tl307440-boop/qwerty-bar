@@ -1,4 +1,4 @@
-﻿"""The taskbar word bar: rendering, typing engine and interaction."""
+"""The taskbar word bar: rendering, typing engine and interaction."""
 
 from __future__ import annotations
 
@@ -91,6 +91,11 @@ class WordBar:
         self._drag = None
         self._hwnd = 0
         self._advancing = False
+        self._settings = None          # persistent settings panel (Toplevel)
+        self._flag_vars: dict[str, tk.BooleanVar] = {}
+        self._autostart_var: tk.BooleanVar | None = None
+        self._settings = None  # persistent settings panel (stays open while toggling)
+        self._flag_vars: dict[str, tk.BooleanVar] = {}
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -350,7 +355,10 @@ class WordBar:
     def _on_key(self, event: tk.Event) -> str | None:
         key = event.keysym
         if key == "Escape":
-            self.hide()
+            if self._settings_open():
+                self._close_settings()
+            else:
+                self.hide()
             return "break"
         if key == "BackSpace":
             self.typed, self.error_at = self.typed[:-1], -1
@@ -562,72 +570,220 @@ class WordBar:
             self._radio(menu, i == self.session.chapter, f"第 {i + 1} 章", lambda c=i: self.jump_chapter(c))
         return menu
 
+    def _settings_open(self) -> bool:
+        return bool(self._settings and self._settings.winfo_exists())
+
     def _on_menu(self, event) -> None:
-        menu = self._new_menu()
-        store = self.store
+        """⋮ / 右键：开关常驻设置面板（勾选不会自动关掉）。"""
+        if self._settings_open():
+            self._close_settings()
+            return
+        self._open_settings(event)
 
-        menu.add_cascade(label=f"词库：{self.session.meta.name}", menu=self._menu_dictionaries())
-        menu.add_cascade(label=f"章节：第 {self.session.chapter + 1} 章", menu=self._menu_chapters())
-        menu.add_separator()
+    def _close_settings(self) -> None:
+        if self._settings_open():
+            try:
+                self._settings.destroy()
+            except tk.TclError:
+                pass
+        self._settings = None
+        self._flag_vars.clear()
+        self._autostart_var = None
 
-        def flag(key: str, label: str) -> None:
-            menu.add_command(
-                label=f"{MARK_TICK if store[key] else '   '} {label}",
-                command=lambda: (store.toggle(key), store.save(), self.render()),
+    def _open_settings(self, event) -> None:
+        self._close_settings()
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=self.theme["bg"])
+        win.bind("<Escape>", lambda _e: self._close_settings())
+        self._settings = win
+
+        outer = tk.Frame(win, bg=self.theme["rule"], bd=0)
+        outer.pack(fill="both", expand=True)
+        body = tk.Frame(outer, bg=self.theme["bg"], padx=10, pady=8)
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+
+        font = ("Microsoft YaHei UI", 9)
+        muted = self.theme["meta"]
+        fg = self.theme["pending"]
+        bg = self.theme["bg"]
+
+        header = tk.Frame(body, bg=bg)
+        header.pack(fill="x")
+        tk.Label(header, text="设置", font=("Microsoft YaHei UI", 10, "bold"), fg=fg, bg=bg).pack(side="left")
+        tk.Label(header, text="再点 ⋮ 关闭 · Esc", font=("Microsoft YaHei UI", 8), fg=muted, bg=bg).pack(side="right")
+
+        def sep() -> None:
+            tk.Frame(body, bg=self.theme["rule"], height=1).pack(fill="x", pady=6)
+
+        def link_row(text: str, on_click) -> None:
+            row = tk.Frame(body, bg=bg)
+            row.pack(fill="x", pady=1)
+            btn = tk.Label(row, text=text, font=font, fg=fg, bg=bg, cursor="hand2", anchor="w")
+            btn.pack(fill="x")
+            btn.bind("<Button-1>", on_click)
+            btn.bind("<Enter>", lambda _e, b=btn: b.configure(fg=self.theme["progress"]))
+            btn.bind("<Leave>", lambda _e, b=btn: b.configure(fg=fg))
+
+        link_row(
+            f"词库：{self.session.meta.name}  ›",
+            lambda e: self._menu_dictionaries().tk_popup(e.x_root, e.y_root),
+        )
+        link_row(
+            f"章节：第 {self.session.chapter + 1} 章  ›",
+            lambda e: self._menu_chapters().tk_popup(e.x_root, e.y_root),
+        )
+
+        sep()
+
+        flags = (
+            ("show_translation", "显示释义"),
+            ("show_phonetic", "显示音标"),
+            ("dictation", "默写模式（隐藏单词，Tab 切换）"),
+            ("loop_word", "单词循环"),
+            ("pronounce", "新词出现时自动发音"),
+            ("sound", "按键提示音"),
+        )
+        self._flag_vars = {}
+        for key, label in flags:
+            var = tk.BooleanVar(value=bool(self.store[key]))
+            self._flag_vars[key] = var
+            cb = tk.Checkbutton(
+                body,
+                text=label,
+                variable=var,
+                font=font,
+                fg=fg,
+                bg=bg,
+                activebackground=bg,
+                activeforeground=fg,
+                selectcolor=bg,
+                highlightthickness=0,
+                bd=0,
+                anchor="w",
+                cursor="hand2",
+                command=lambda k=key, v=var: self._on_flag_toggle(k, v),
             )
+            cb.pack(fill="x", pady=1)
 
-        flag("show_translation", "显示释义")
-        flag("show_phonetic", "显示音标")
-        flag("dictation", "默写模式（隐藏单词，Tab 切换）")
-        flag("loop_word", "单词循环")
-        flag("pronounce", "新词出现时自动发音")
-        flag("sound", "按键提示音")
+        sep()
 
-        accent = self._new_menu()
-        for code, label in (("us", "美音"), ("uk", "英音")):
-            self._radio(
-                accent, store["accent"] == code, label,
-                lambda c=code: (store.__setitem__("accent", c), store.save(), self.render()),
-            )
-        menu.add_cascade(label="发音口音", menu=accent)
-        menu.add_separator()
+        link_row("发音口音  ›", lambda e: self._popup_accent(e.x_root, e.y_root))
+        link_row("位置  ›", lambda e: self._popup_place(e.x_root, e.y_root))
+        link_row("外观  ›", lambda e: self._popup_look(e.x_root, e.y_root))
 
-        place = self._new_menu()
-        for code, label in (("taskbar", "贴在任务栏上"), ("above", "任务栏上方"), ("free", "自由拖动")):
-            self._radio(place, store["dock"] == code, label, lambda c=code: self._set_dock(c))
-        place.add_separator()
-        for code, label in (("left", "靠左"), ("center", "居中"), ("right", "靠右")):
-            self._radio(
-                place, store["align"] == code, label,
-                lambda c=code: (store.__setitem__("align", c), store.save(), self.reposition()),
-            )
-        menu.add_cascade(label="位置", menu=place)
+        sep()
 
-        look = self._new_menu()
-        for code, label in (("auto", "跟随系统"), ("dark", "深色"), ("light", "浅色")):
-            self._radio(look, store["theme"] == code, label, lambda c=code: self._set_theme(c))
-        look.add_separator()
-        for n in (9, 10, 11, 12, 13, 14):
-            self._radio(look, int(store["font_size"]) == n, f"字号 {n}", lambda n=n: self._set_font_size(n))
-        look.add_separator()
-        for n in (600, 750, 900, 1100, 1400):
-            self._radio(
-                look, int(store["max_width"]) == n, f"最大宽度 {n}",
-                lambda n=n: (store.__setitem__("max_width", n), store.save(), self.render()),
-            )
-        menu.add_cascade(label="外观", menu=look)
-        menu.add_separator()
-
-        stats = store["stats"]
+        stats = self.store["stats"]
         typed, errors = stats.get("typed", 0), stats.get("errors", 0)
         rate = 100.0 * (typed - errors) / typed if typed else 100.0
-        menu.add_command(label=f"已练 {stats.get('words', 0)} 词 · 正确率 {rate:.1f}%", state="disabled")
-        menu.add_command(label=f"{MARK_TICK if autostart_enabled() else '   '} 开机自启", command=self._toggle_autostart)
-        menu.add_command(label=f"隐藏（{store['hotkey_toggle']} 唤回）", command=self.hide)
-        menu.add_separator()
-        menu.add_command(label="退出", command=self.quit)
+        tk.Label(
+            body,
+            text=f"已练 {stats.get('words', 0)} 词 · 正确率 {rate:.1f}%",
+            font=("Microsoft YaHei UI", 8),
+            fg=muted,
+            bg=bg,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 2))
 
-        x, y = self.root.winfo_pointerxy() if event is None else (event.x_root, event.y_root)
+        self._autostart_var = tk.BooleanVar(value=autostart_enabled())
+        tk.Checkbutton(
+            body,
+            text="开机自启",
+            variable=self._autostart_var,
+            font=font,
+            fg=fg,
+            bg=bg,
+            activebackground=bg,
+            activeforeground=fg,
+            selectcolor=bg,
+            highlightthickness=0,
+            bd=0,
+            anchor="w",
+            cursor="hand2",
+            command=self._on_autostart_toggle,
+        ).pack(fill="x", pady=1)
+
+        link_row(f"隐藏（{self.store['hotkey_toggle']} 唤回）", lambda _e: (self._close_settings(), self.hide()))
+        link_row("退出", lambda _e: (self._close_settings(), self.quit()))
+
+        win.update_idletasks()
+        width, height = win.winfo_reqwidth(), win.winfo_reqheight()
+        if event is not None:
+            x, y = event.x_root, event.y_root
+        else:
+            # Anchor near the ⋮ control on the right of the bar.
+            x = self.root.winfo_rootx() + self.root.winfo_width() - width
+            y = self.root.winfo_rooty()
+        y = y - height - 6
+        if y < 0:
+            y = self.root.winfo_rooty() + self.root.winfo_height() + 6
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        x = max(0, min(x, sw - width))
+        y = max(0, min(y, sh - height))
+        win.geometry(f"+{int(x)}+{int(y)}")
+        win.deiconify()
+        win.lift()
+        try:
+            winapi.make_tool_window(winapi.hwnd_of(win))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_flag_toggle(self, key: str, var: tk.BooleanVar) -> None:
+        self.store[key] = bool(var.get())
+        self.store.save()
+        self.render()
+        # Keep the panel open — that is the whole point.
+
+    def _on_autostart_toggle(self) -> None:
+        enabled = bool(self._autostart_var.get()) if self._autostart_var else not autostart_enabled()
+        set_autostart(enabled)
+        if self._autostart_var is not None:
+            self._autostart_var.set(autostart_enabled())
+
+    def _popup_accent(self, x: int, y: int) -> None:
+        menu = self._new_menu()
+        for code, label in (("us", "美音"), ("uk", "英音")):
+            self._radio(
+                menu,
+                self.store["accent"] == code,
+                label,
+                lambda c=code: (self.store.__setitem__("accent", c), self.store.save(), self.render()),
+            )
+        menu.tk_popup(x, y)
+
+    def _popup_place(self, x: int, y: int) -> None:
+        menu = self._new_menu()
+        for code, label in (("taskbar", "贴在任务栏上"), ("above", "任务栏上方"), ("free", "自由拖动")):
+            self._radio(menu, self.store["dock"] == code, label, lambda c=code: self._set_dock(c))
+        menu.add_separator()
+        for code, label in (("left", "靠左"), ("center", "居中"), ("right", "靠右")):
+            self._radio(
+                menu,
+                self.store["align"] == code,
+                label,
+                lambda c=code: (self.store.__setitem__("align", c), self.store.save(), self.reposition()),
+            )
+        menu.tk_popup(x, y)
+
+    def _popup_look(self, x: int, y: int) -> None:
+        menu = self._new_menu()
+        for code, label in (("auto", "跟随系统"), ("dark", "深色"), ("light", "浅色")):
+            self._radio(menu, self.store["theme"] == code, label, lambda c=code: self._set_theme(c))
+        menu.add_separator()
+        for n in (9, 10, 11, 12, 13, 14):
+            self._radio(menu, int(self.store["font_size"]) == n, f"字号 {n}", lambda n=n: self._set_font_size(n))
+        menu.add_separator()
+        for n in (600, 750, 900, 1100, 1400):
+            self._radio(
+                menu,
+                int(self.store["max_width"]) == n,
+                f"最大宽度 {n}",
+                lambda n=n: (self.store.__setitem__("max_width", n), self.store.save(), self.render()),
+            )
         menu.tk_popup(x, y)
 
     def _set_dock(self, mode: str) -> None:
@@ -644,6 +800,9 @@ class WordBar:
         self.root.configure(bg=self.theme["bg"])
         self.canvas.configure(bg=self.theme["bg"])
         self.render()
+        # Rebuild panel so colors match the new theme while keeping it open.
+        if self._settings_open():
+            self._open_settings(None)
 
     def _set_font_size(self, n: int) -> None:
         self.store["font_size"] = n
@@ -655,12 +814,10 @@ class WordBar:
         self.height = self._bar_height()
         self.render()
 
-    def _toggle_autostart(self) -> None:
-        set_autostart(not autostart_enabled())
-
     # -------------------------------------------------------------- lifecycle
 
     def hide(self) -> None:
+        self._close_settings()
         self.hidden = True
         self.root.withdraw()
 
@@ -680,6 +837,8 @@ class WordBar:
                 winapi.assert_topmost(self._hwnd)
                 if self.store["dock"] != "free":
                     self.reposition()
+                if self._settings_open():
+                    winapi.assert_topmost(winapi.hwnd_of(self._settings))
             except Exception:  # noqa: BLE001
                 pass
         self.root.after(900, self._tick)
@@ -712,6 +871,7 @@ class WordBar:
         self.root.after(120, self._poll_events)
 
     def quit(self) -> None:
+        self._close_settings()
         self._persist()
         self.root.destroy()
 
