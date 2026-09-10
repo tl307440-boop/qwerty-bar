@@ -135,6 +135,8 @@ class WordBar:
         self._install_hotkeys()
         self._tick()
         self._poll_events()
+        # Defer so the window is on screen before Youdao audio starts.
+        self.root.after(200, self._announce_current)
 
     def _bind(self) -> None:
         c = self.canvas
@@ -193,6 +195,7 @@ class WordBar:
         self.session = self._open_dictionary(dict_id, restore=True)
         self._persist()
         self.render()
+        self._announce_current()
 
     def _save_progress(self) -> None:
         self.store.remember_progress(self.session.meta.id, self.session.chapter, self.session.index)
@@ -404,22 +407,23 @@ class WordBar:
         self.render()
 
     def _complete(self, word) -> None:
+        # Pronunciation belongs to the *next* word's transaction (on appear),
+        # not after we have already jumped away from this one.
         self._advancing = True
         self.render()
         self.store.bump("words")
-        if self.store["pronounce"]:
-            audio.pronounce(word.name, self.store["accent"])
-        elif self.store["sound"]:
+        if self.store["sound"]:
             audio.blip("ok")
 
         def go():
             self._advancing = False
             if self.store["loop_word"]:
                 self._reset_word()
+                self._announce_current()
             else:
                 self.step(1, silent=True)
 
-        self.root.after(260, go)
+        self.root.after(180, go)
 
     def step(self, delta: int, silent: bool = False) -> None:
         rolled = self.session.advance(delta)
@@ -428,12 +432,22 @@ class WordBar:
             audio.blip("chapter")
         self._persist()
         self.render()
+        self._announce_current()
 
     def jump_chapter(self, chapter: int) -> None:
         self.session.seek(chapter, 0)
         self.typed, self.error_at = "", -1
         self._persist()
         self.render()
+        self._announce_current()
+
+    def _announce_current(self) -> None:
+        """Speak the word that just became current — start of its typing transaction."""
+        if not self.store["pronounce"]:
+            return
+        word = self.session.current()
+        if word:
+            audio.pronounce(word.name, self.store["accent"])
 
     def _pronounce(self) -> None:
         word = self.session.current()
@@ -566,7 +580,7 @@ class WordBar:
         flag("show_phonetic", "显示音标")
         flag("dictation", "默写模式（隐藏单词，Tab 切换）")
         flag("loop_word", "单词循环")
-        flag("pronounce", "拼对后自动发音")
+        flag("pronounce", "新词出现时自动发音")
         flag("sound", "按键提示音")
 
         accent = self._new_menu()
