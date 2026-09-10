@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
@@ -140,6 +141,8 @@ class WordBar:
         self._install_hotkeys()
         self._tick()
         self._poll_events()
+        # Warm key-sound assets (Default.wav / beep / correct) off the UI thread.
+        threading.Thread(target=audio.ensure_sounds, daemon=True).start()
         # Defer so the window is on screen before Youdao audio starts.
         self.root.after(200, self._announce_current)
 
@@ -395,6 +398,8 @@ class WordBar:
         if expected and char.lower() == expected.lower():
             self.typed += expected
             self.error_at = -1
+            if self.store["sound"]:
+                audio.key(self.store["key_sound"])
             if len(self.typed) >= len(word.name):
                 self._complete(word)
                 return
@@ -407,7 +412,7 @@ class WordBar:
         self.typed = word.name[: self.error_at + 1]
         self.render()
         if self.store["sound"]:
-            audio.blip("err")
+            audio.wrong()
         self.root.after(220, self._reset_word)
 
     def _reset_word(self) -> None:
@@ -421,7 +426,7 @@ class WordBar:
         self.render()
         self.store.bump("words")
         if self.store["sound"]:
-            audio.blip("ok")
+            audio.correct()
 
         def go():
             self._advancing = False
@@ -623,17 +628,19 @@ class WordBar:
             row.pack(fill="x", pady=1)
             btn = tk.Label(row, text=text, font=font, fg=fg, bg=bg, cursor="hand2", anchor="w")
             btn.pack(fill="x")
-            btn.bind("<Button-1>", on_click)
+            # ButtonRelease (not Button-1): posting a menu on press makes the
+            # subsequent release dismiss it instantly (~1s flicker).
+            btn.bind("<ButtonRelease-1>", on_click)
             btn.bind("<Enter>", lambda _e, b=btn: b.configure(fg=self.theme["progress"]))
             btn.bind("<Leave>", lambda _e, b=btn: b.configure(fg=fg))
 
         link_row(
             f"词库：{self.session.meta.name}  ›",
-            lambda e: self._menu_dictionaries().tk_popup(e.x_root, e.y_root),
+            lambda e: self._post_menu(self._menu_dictionaries(), e.x_root, e.y_root),
         )
         link_row(
             f"章节：第 {self.session.chapter + 1} 章  ›",
-            lambda e: self._menu_chapters().tk_popup(e.x_root, e.y_root),
+            lambda e: self._post_menu(self._menu_chapters(), e.x_root, e.y_root),
         )
 
         sep()
@@ -644,7 +651,7 @@ class WordBar:
             ("dictation", "默写模式（隐藏单词，Tab 切换）"),
             ("loop_word", "单词循环"),
             ("pronounce", "新词出现时自动发音"),
-            ("sound", "按键提示音"),
+            ("sound", "按键音效（敲击 / 对错提示）"),
         )
         self._flag_vars = {}
         for key, label in flags:
@@ -671,6 +678,7 @@ class WordBar:
         sep()
 
         link_row("发音口音  ›", lambda e: self._popup_accent(e.x_root, e.y_root))
+        link_row("按键音效包  ›", lambda e: self._popup_key_sound(e.x_root, e.y_root))
         link_row("位置  ›", lambda e: self._popup_place(e.x_root, e.y_root))
         link_row("外观  ›", lambda e: self._popup_look(e.x_root, e.y_root))
 
@@ -744,6 +752,20 @@ class WordBar:
         if self._autostart_var is not None:
             self._autostart_var.set(autostart_enabled())
 
+    def _post_menu(self, menu: tk.Menu, x: int, y: int) -> None:
+        """Show a cascade menu after the click fully finishes so it is not dismissed."""
+
+        def show() -> None:
+            try:
+                menu.tk_popup(x, y)
+            finally:
+                try:
+                    menu.grab_release()
+                except tk.TclError:
+                    pass
+
+        self.root.after(1, show)
+
     def _popup_accent(self, x: int, y: int) -> None:
         menu = self._new_menu()
         for code, label in (("us", "美音"), ("uk", "英音")):
@@ -753,7 +775,26 @@ class WordBar:
                 label,
                 lambda c=code: (self.store.__setitem__("accent", c), self.store.save(), self.render()),
             )
-        menu.tk_popup(x, y)
+        self._post_menu(menu, x, y)
+
+    def _popup_key_sound(self, x: int, y: int) -> None:
+        menu = self._new_menu()
+        current = self.store["key_sound"]
+        for name in audio.KEY_PACKS:
+            label = name.rsplit(".", 1)[0]
+            self._radio(
+                menu,
+                current == name,
+                label,
+                lambda n=name: self._set_key_sound(n),
+            )
+        self._post_menu(menu, x, y)
+
+    def _set_key_sound(self, name: str) -> None:
+        self.store["key_sound"] = name
+        self.store.save()
+        # Preview the newly selected pack.
+        audio.key(name)
 
     def _popup_place(self, x: int, y: int) -> None:
         menu = self._new_menu()
@@ -767,7 +808,7 @@ class WordBar:
                 label,
                 lambda c=code: (self.store.__setitem__("align", c), self.store.save(), self.reposition()),
             )
-        menu.tk_popup(x, y)
+        self._post_menu(menu, x, y)
 
     def _popup_look(self, x: int, y: int) -> None:
         menu = self._new_menu()
@@ -784,7 +825,7 @@ class WordBar:
                 f"最大宽度 {n}",
                 lambda n=n: (self.store.__setitem__("max_width", n), self.store.save(), self.render()),
             )
-        menu.tk_popup(x, y)
+        self._post_menu(menu, x, y)
 
     def _set_dock(self, mode: str) -> None:
         if mode == "free" and self.store["dock"] != "free":
@@ -837,8 +878,8 @@ class WordBar:
                 winapi.assert_topmost(self._hwnd)
                 if self.store["dock"] != "free":
                     self.reposition()
-                if self._settings_open():
-                    winapi.assert_topmost(winapi.hwnd_of(self._settings))
+                # Do NOT re-assert topmost on the settings panel here: that
+                # SetWindowPos call dismisses any open cascade Menu after ~1s.
             except Exception:  # noqa: BLE001
                 pass
         self.root.after(900, self._tick)
