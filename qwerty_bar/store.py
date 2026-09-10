@@ -20,7 +20,7 @@ DEFAULTS: dict[str, Any] = {
     "dictation": False,          # hide the word, type it from memory
     "loop_word": False,          # stay on the same word until toggled off
     "sound": True,               # keystroke / success blips
-    "pronounce": True,           # fetch word audio from Youdao
+    "pronounce": True,           # speak each word as soon as it appears
     "accent": "us",              # us | uk
     "theme": "auto",             # auto | dark | light
     "font_size": 11,
