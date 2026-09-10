@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+data/dicts/
+data/audio/
+data/state.json
+data/show.flag
+_*.png
+run_out.txt
+run_err.txt
