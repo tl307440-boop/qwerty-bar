@@ -92,11 +92,14 @@ class WordBar:
         self._drag = None
         self._hwnd = 0
         self._advancing = False
-        self._settings = None          # persistent settings panel (Toplevel)
-        self._flag_vars: dict[str, tk.BooleanVar] = {}
-        self._autostart_var: tk.BooleanVar | None = None
         self._settings = None  # persistent settings panel (stays open while toggling)
         self._flag_vars: dict[str, tk.BooleanVar] = {}
+        self._autostart_var: tk.BooleanVar | None = None
+        self._cascade_key: str | None = None
+        self._cascade_menu: tk.Menu | None = None
+        self._cascade_labels: dict[str, tk.Label] = {}
+        self._cascade_titles: dict[str, str] = {}
+        self._cascade_suppress = False
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -586,6 +589,7 @@ class WordBar:
         self._open_settings(event)
 
     def _close_settings(self) -> None:
+        self._close_cascade()
         if self._settings_open():
             try:
                 self._settings.destroy()
@@ -594,6 +598,29 @@ class WordBar:
         self._settings = None
         self._flag_vars.clear()
         self._autostart_var = None
+        self._cascade_labels.clear()
+        self._cascade_titles.clear()
+        self._cascade_suppress = False
+
+    def _close_cascade(self) -> None:
+        menu = self._cascade_menu
+        key = self._cascade_key
+        self._cascade_menu = None
+        self._cascade_key = None
+        if menu is not None:
+            try:
+                menu.unpost()
+            except tk.TclError:
+                pass
+            try:
+                menu.destroy()
+            except tk.TclError:
+                pass
+        if key and key in self._cascade_labels and key in self._cascade_titles:
+            try:
+                self._cascade_labels[key].configure(text=f"{self._cascade_titles[key]}  ›")
+            except tk.TclError:
+                pass
 
     def _open_settings(self, event) -> None:
         self._close_settings()
@@ -623,25 +650,42 @@ class WordBar:
         def sep() -> None:
             tk.Frame(body, bg=self.theme["rule"], height=1).pack(fill="x", pady=6)
 
-        def link_row(text: str, on_click) -> None:
+        def action_row(text: str, on_click) -> None:
             row = tk.Frame(body, bg=bg)
             row.pack(fill="x", pady=1)
             btn = tk.Label(row, text=text, font=font, fg=fg, bg=bg, cursor="hand2", anchor="w")
             btn.pack(fill="x")
-            # ButtonRelease (not Button-1): posting a menu on press makes the
-            # subsequent release dismiss it instantly (~1s flicker).
             btn.bind("<ButtonRelease-1>", on_click)
             btn.bind("<Enter>", lambda _e, b=btn: b.configure(fg=self.theme["progress"]))
             btn.bind("<Leave>", lambda _e, b=btn: b.configure(fg=fg))
 
-        link_row(
-            f"词库：{self.session.meta.name}  ›",
-            lambda e: self._post_menu(self._menu_dictionaries(), e.x_root, e.y_root),
-        )
-        link_row(
-            f"章节：第 {self.session.chapter + 1} 章  ›",
-            lambda e: self._post_menu(self._menu_chapters(), e.x_root, e.y_root),
-        )
+        def cascade_row(key: str, title: str, builder) -> None:
+            """Click once to expand a submenu panel; click the same row again to collapse."""
+            row = tk.Frame(body, bg=bg)
+            row.pack(fill="x", pady=1)
+            btn = tk.Label(row, text=f"{title}  ›", font=font, fg=fg, bg=bg, cursor="hand2", anchor="w")
+            btn.pack(fill="x")
+            self._cascade_labels[key] = btn
+            self._cascade_titles[key] = title
+
+            def on_press(_e, k=key):
+                if self._cascade_key == k:
+                    self._close_cascade()
+                    self._cascade_suppress = True
+
+            def on_release(e, k=key, build=builder):
+                if self._cascade_suppress:
+                    self._cascade_suppress = False
+                    return
+                self._toggle_cascade(k, build, e.x_root, e.y_root)
+
+            btn.bind("<Button-1>", on_press)
+            btn.bind("<ButtonRelease-1>", on_release)
+            btn.bind("<Enter>", lambda _e, b=btn: b.configure(fg=self.theme["progress"]))
+            btn.bind("<Leave>", lambda _e, b=btn: b.configure(fg=fg))
+
+        cascade_row("dict", f"词库：{self.session.meta.name}", self._menu_dictionaries)
+        cascade_row("chapter", f"章节：第 {self.session.chapter + 1} 章", self._menu_chapters)
 
         sep()
 
@@ -677,10 +721,10 @@ class WordBar:
 
         sep()
 
-        link_row("发音口音  ›", lambda e: self._popup_accent(e.x_root, e.y_root))
-        link_row("按键音效包  ›", lambda e: self._popup_key_sound(e.x_root, e.y_root))
-        link_row("位置  ›", lambda e: self._popup_place(e.x_root, e.y_root))
-        link_row("外观  ›", lambda e: self._popup_look(e.x_root, e.y_root))
+        cascade_row("accent", "发音口音", lambda: self._build_accent_menu())
+        cascade_row("keysound", "按键音效包", lambda: self._build_key_sound_menu())
+        cascade_row("place", "位置", lambda: self._build_place_menu())
+        cascade_row("look", "外观", lambda: self._build_look_menu())
 
         sep()
 
@@ -714,8 +758,8 @@ class WordBar:
             command=self._on_autostart_toggle,
         ).pack(fill="x", pady=1)
 
-        link_row(f"隐藏（{self.store['hotkey_toggle']} 唤回）", lambda _e: (self._close_settings(), self.hide()))
-        link_row("退出", lambda _e: (self._close_settings(), self.quit()))
+        action_row(f"隐藏（{self.store['hotkey_toggle']} 唤回）", lambda _e: (self._close_settings(), self.hide()))
+        action_row("退出", lambda _e: (self._close_settings(), self.quit()))
 
         win.update_idletasks()
         width, height = win.winfo_reqwidth(), win.winfo_reqheight()
@@ -752,6 +796,28 @@ class WordBar:
         if self._autostart_var is not None:
             self._autostart_var.set(autostart_enabled())
 
+    def _toggle_cascade(self, key: str, builder, x: int, y: int) -> None:
+        if self._cascade_key == key:
+            self._close_cascade()
+            return
+        self._close_cascade()
+        menu = builder()
+        self._cascade_key = key
+        self._cascade_menu = menu
+        if key in self._cascade_labels and key in self._cascade_titles:
+            try:
+                self._cascade_labels[key].configure(text=f"{self._cascade_titles[key]}  ˅")
+            except tk.TclError:
+                pass
+
+        def on_unmap(_event=None, expected=menu):
+            # Menu dismissed by picking an item or clicking elsewhere.
+            if self._cascade_menu is expected:
+                self._close_cascade()
+
+        menu.bind("<Unmap>", on_unmap)
+        self._post_menu(menu, x, y)
+
     def _post_menu(self, menu: tk.Menu, x: int, y: int) -> None:
         """Show a cascade menu after the click fully finishes so it is not dismissed."""
 
@@ -766,18 +832,18 @@ class WordBar:
 
         self.root.after(1, show)
 
-    def _popup_accent(self, x: int, y: int) -> None:
+    def _build_accent_menu(self) -> tk.Menu:
         menu = self._new_menu()
         for code, label in (("us", "美音"), ("uk", "英音")):
             self._radio(
                 menu,
                 self.store["accent"] == code,
                 label,
-                lambda c=code: (self.store.__setitem__("accent", c), self.store.save(), self.render()),
+                lambda c=code: (self.store.__setitem__("accent", c), self.store.save(), self.render(), self._close_cascade()),
             )
-        self._post_menu(menu, x, y)
+        return menu
 
-    def _popup_key_sound(self, x: int, y: int) -> None:
+    def _build_key_sound_menu(self) -> tk.Menu:
         menu = self._new_menu()
         current = self.store["key_sound"]
         for name in audio.KEY_PACKS:
@@ -786,46 +852,60 @@ class WordBar:
                 menu,
                 current == name,
                 label,
-                lambda n=name: self._set_key_sound(n),
+                lambda n=name: (self._set_key_sound(n), self._close_cascade()),
             )
-        self._post_menu(menu, x, y)
+        return menu
 
     def _set_key_sound(self, name: str) -> None:
         self.store["key_sound"] = name
         self.store.save()
-        # Preview the newly selected pack.
         audio.key(name)
 
-    def _popup_place(self, x: int, y: int) -> None:
+    def _build_place_menu(self) -> tk.Menu:
         menu = self._new_menu()
         for code, label in (("taskbar", "贴在任务栏上"), ("above", "任务栏上方"), ("free", "自由拖动")):
-            self._radio(menu, self.store["dock"] == code, label, lambda c=code: self._set_dock(c))
+            self._radio(menu, self.store["dock"] == code, label, lambda c=code: (self._set_dock(c), self._close_cascade()))
         menu.add_separator()
         for code, label in (("left", "靠左"), ("center", "居中"), ("right", "靠右")):
             self._radio(
                 menu,
                 self.store["align"] == code,
                 label,
-                lambda c=code: (self.store.__setitem__("align", c), self.store.save(), self.reposition()),
+                lambda c=code: (
+                    self.store.__setitem__("align", c),
+                    self.store.save(),
+                    self.reposition(),
+                    self._close_cascade(),
+                ),
             )
-        self._post_menu(menu, x, y)
+        return menu
 
-    def _popup_look(self, x: int, y: int) -> None:
+    def _build_look_menu(self) -> tk.Menu:
         menu = self._new_menu()
         for code, label in (("auto", "跟随系统"), ("dark", "深色"), ("light", "浅色")):
-            self._radio(menu, self.store["theme"] == code, label, lambda c=code: self._set_theme(c))
+            self._radio(menu, self.store["theme"] == code, label, lambda c=code: (self._set_theme(c), self._close_cascade()))
         menu.add_separator()
         for n in (9, 10, 11, 12, 13, 14):
-            self._radio(menu, int(self.store["font_size"]) == n, f"字号 {n}", lambda n=n: self._set_font_size(n))
+            self._radio(
+                menu,
+                int(self.store["font_size"]) == n,
+                f"字号 {n}",
+                lambda n=n: (self._set_font_size(n), self._close_cascade()),
+            )
         menu.add_separator()
         for n in (600, 750, 900, 1100, 1400):
             self._radio(
                 menu,
                 int(self.store["max_width"]) == n,
                 f"最大宽度 {n}",
-                lambda n=n: (self.store.__setitem__("max_width", n), self.store.save(), self.render()),
+                lambda n=n: (
+                    self.store.__setitem__("max_width", n),
+                    self.store.save(),
+                    self.render(),
+                    self._close_cascade(),
+                ),
             )
-        self._post_menu(menu, x, y)
+        return menu
 
     def _set_dock(self, mode: str) -> None:
         if mode == "free" and self.store["dock"] != "free":
