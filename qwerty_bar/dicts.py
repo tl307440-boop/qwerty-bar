@@ -149,8 +149,12 @@ class Session:
         self.chapter = max(0, min(chapter, self.chapter_count - 1))
         self.index = max(0, min(index, self.chapter_len - 1))
 
-    def advance(self, step: int = 1) -> bool:
+    def advance(self, step: int = 1, loop_chapter: bool = False) -> bool:
         """Move by `step` words, rolling over chapter boundaries. True if the chapter changed."""
+        if loop_chapter:
+            n = max(1, self.chapter_len)
+            self.index = (self.index + step) % n
+            return False
         self.index += step
         rolled = False
         while self.index >= self.chapter_len:

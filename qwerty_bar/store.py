@@ -19,6 +19,7 @@ DEFAULTS: dict[str, Any] = {
     "show_phonetic": False,
     "dictation": False,          # hide the word, type it from memory
     "loop_word": False,          # stay on the same word until toggled off
+    "loop_chapter": False,       # stay in the current chapter, wrapping its words
     "sound": True,               # per-key click + wrong/correct hint sounds
     "key_sound": "Default.wav",  # file under assets/sounds/key-sound/
     "pronounce": True,           # speak each word as soon as it appears
