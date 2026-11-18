@@ -49,7 +49,17 @@ cd qwerty-bar
 双击 start.bat
 ```
 
-首次运行会自动下载默认词库（CET-4 / CET-6 / IELTS / 考研 / Coder Dict）。
+首次运行会自动下载默认词库（CET-4 / CET-6 / IELTS / 考研 / Coder Dict），并已内置收录《英语六级核心词汇》（20 组，按 List 分组，含全部词根词缀及搭配衍生词）。
+
+### 做成客户端发给同学
+
+同学**不用安装 Python**。你在自己电脑上双击 `build_client.bat`，会生成：
+
+```
+dist\QwertyBar.zip
+```
+
+把这个 zip 发给同学：解压后双击 `QwertyBar.exe` 即可。文件夹里的 `_internal` 不要删。
 
 命令行等价：
 
@@ -86,7 +96,7 @@ python fetch_dicts.py --all           # 全下（约 90MB）
 ## 设置菜单
 
 - **词库 / 章节**：372 本词库，按分类分组；每 20 词一章
-- **显示释义 / 音标 / 默写模式 / 单词循环**
+- **显示释义 / 音标 / 默写模式 / 单词循环 / 章节循环**
 - **自动发音**：拼对后自动播放（美音 / 英音）
 - **位置**：贴在任务栏上 / 任务栏上方 / 自由拖动；靠左、居中、靠右
 - **外观**：跟随系统深浅色、字号、最大宽度
@@ -99,14 +109,18 @@ python fetch_dicts.py --all           # 全下（约 90MB）
 
 ```
 qwerty-bar/
-  start.bat            启动（无控制台窗口）
+  start.bat            源码启动（无控制台窗口）
+  build_client.bat     打包成同学能双击的 QwertyBar.exe
+  使用说明.txt         客户端说明（打进 zip）
   setup.bat            下载 / 更新词库
   fetch_dicts.py       解析上游 dictionary.ts，生成 catalog 并下载词库
   run.pyw              无控制台入口
+  QwertyBar.spec       PyInstaller 打包配置
   qwerty_bar/
     __main__.py        单实例控制 + 启动
     bar.py             状态栏渲染、打字引擎、菜单
     dicts.py           词库目录、章节切分
+    paths.py           源码 / 客户端 的数据目录
     store.py           设置与进度持久化
     audio.py           有道发音 + 提示音
     winapi.py          DPI、任务栏定位、置顶、全局热键、禁用输入法

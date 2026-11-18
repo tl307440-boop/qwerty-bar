@@ -7,10 +7,11 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
+from .paths import APP_ROOT, CUSTOM_DIR, DATA, frozen
+
 DICT_DIR = DATA / "dicts"
 CATALOG = DATA / "catalog.json"
+CUSTOM_CATALOG = CUSTOM_DIR / "catalog.json"
 
 
 @dataclass
@@ -19,13 +20,18 @@ class Word:
     trans: list[str] = field(default_factory=list)
     usphone: str = ""
     ukphone: str = ""
+    notes: list[str] = field(default_factory=list)  # roots, collocations, ... shown after the meaning
+    group: str = ""    # chapter title for dictionaries that ship their own chapters, e.g. "List 1 政治"
+    theme: str = ""    # optional parent heading of the chapter, e.g. "主题一 财政法律"
 
     def phonetic(self, accent: str = "us") -> str:
         raw = (self.usphone if accent == "us" else self.ukphone) or self.usphone or self.ukphone
         return f"/{raw}/" if raw else ""
 
     def translation(self) -> str:
-        return "; ".join(t.strip() for t in self.trans if t and t.strip())
+        meaning = "; ".join(t.strip() for t in self.trans if t and t.strip())
+        extra = "  ".join(f"\u25c7 {n}" for n in self.notes if n)
+        return f"{meaning}  {extra}" if meaning and extra else (meaning or extra)
 
 
 @dataclass
@@ -38,19 +44,20 @@ class DictMeta:
     description: str = ""
     language: str = "en"
     languageCategory: str = "en"
+    custom: bool = False  # bundled with the app, lives in custom_dicts/ instead of data/dicts/
 
     @property
     def path(self) -> Path:
-        return DICT_DIR / self.file
+        return (CUSTOM_DIR if self.custom else DICT_DIR) / self.file
 
     @property
     def downloaded(self) -> bool:
         return self.path.exists()
 
 
-def load_catalog() -> list[DictMeta]:
+def _read_catalog(path: Path, custom: bool) -> list[DictMeta]:
     try:
-        raw = json.loads(CATALOG.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - run fetch_dicts.py to create it
         return []
     metas = []
@@ -65,9 +72,22 @@ def load_catalog() -> list[DictMeta]:
                 description=item.get("description", ""),
                 language=item.get("language", "en"),
                 languageCategory=item.get("languageCategory", "en"),
+                custom=custom,
             )
         )
     return [m for m in metas if m.id and m.file]
+
+
+def load_catalog() -> list[DictMeta]:
+    """Upstream catalog plus the bundled custom dictionaries (placed right after CET-6)."""
+    metas = _read_catalog(CATALOG, custom=False)
+    custom = _read_catalog(CUSTOM_CATALOG, custom=True)
+    if not custom:
+        return metas
+    ids = {m.id for m in custom}
+    metas = [m for m in metas if m.id not in ids]
+    at = next((i + 1 for i, m in enumerate(metas) if m.id == "cet6"), len(metas))
+    return metas[:at] + custom + metas[at:]
 
 
 def load_words(meta: DictMeta) -> list[Word]:
@@ -86,6 +106,9 @@ def load_words(meta: DictMeta) -> list[Word]:
                 trans=[str(t) for t in trans],
                 usphone=str(item.get("usphone") or ""),
                 ukphone=str(item.get("ukphone") or ""),
+                notes=[str(n) for n in (item.get("notes") or [])],
+                group=str(item.get("chapter") or ""),
+                theme=str(item.get("theme") or ""),
             )
         )
     return words
@@ -98,7 +121,8 @@ def download_dict(meta: DictMeta, on_done=None) -> threading.Thread:
         try:
             import sys
 
-            sys.path.insert(0, str(ROOT))
+            if not frozen():
+                sys.path.insert(0, str(APP_ROOT))
             from fetch_dicts import download  # noqa: PLC0415 - optional at runtime
 
             DICT_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,7 +141,11 @@ def download_dict(meta: DictMeta, on_done=None) -> threading.Thread:
 
 
 class Session:
-    """A dictionary split into fixed-size chapters, with a cursor into the current one."""
+    """A dictionary split into chapters, with a cursor into the current one.
+
+    Words that carry a ``chapter`` title (custom dictionaries) are grouped by it, in order of
+    appearance. Everything else is cut into fixed-size chapters, as qwerty-learner does.
+    """
 
     def __init__(self, meta: DictMeta, words: list[Word], chapter_size: int = 20):
         self.meta = meta
@@ -125,14 +153,39 @@ class Session:
         self.chapter_size = max(1, chapter_size)
         self.chapter = 0
         self.index = 0
+        self._chapters: list[list[Word]] = self._split()
+
+    def _split(self) -> list[list[Word]]:
+        if self.words and all(w.group for w in self.words):
+            groups: dict[str, list[Word]] = {}
+            for w in self.words:
+                groups.setdefault(w.group, []).append(w)
+            return list(groups.values())
+        size = self.chapter_size
+        return [self.words[i : i + size] for i in range(0, len(self.words), size)] or [[]]
+
+    @property
+    def titled(self) -> bool:
+        """True when chapters have names of their own (instead of plain numbers)."""
+        return bool(self.words) and bool(self.words[0].group)
 
     @property
     def chapter_count(self) -> int:
-        return max(1, -(-len(self.words) // self.chapter_size))
+        return max(1, len(self._chapters))
+
+    def chapter_title(self, chapter: int | None = None) -> str:
+        i = self.chapter if chapter is None else chapter
+        if self.titled and 0 <= i < len(self._chapters) and self._chapters[i]:
+            return self._chapters[i][0].group
+        return f"chp.{i + 1}"
+
+    def chapter_theme(self, chapter: int) -> str:
+        if self.titled and 0 <= chapter < len(self._chapters) and self._chapters[chapter]:
+            return self._chapters[chapter][0].theme
+        return ""
 
     def chapter_words(self) -> list[Word]:
-        start = self.chapter * self.chapter_size
-        return self.words[start : start + self.chapter_size]
+        return self._chapters[self.chapter] if self.chapter < len(self._chapters) else []
 
     @property
     def chapter_len(self) -> int:

@@ -15,11 +15,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .paths import DATA, RESOURCE_ROOT, frozen
+
 winmm = ctypes.WinDLL("winmm")
-ROOT = Path(__file__).resolve().parent.parent
-SOUNDS = ROOT / "assets" / "sounds"
+BUNDLED_SOUNDS = RESOURCE_ROOT / "assets" / "sounds"
+SOUNDS = DATA / "sounds" if frozen() else BUNDLED_SOUNDS
 KEY_SOUNDS = SOUNDS / "key-sound"
-CACHE = ROOT / "data" / "audio"
+CACHE = DATA / "audio"
 
 _MIRRORS = (
     "https://cdn.jsdelivr.net/gh/RealKai42/qwerty-learner@master/public/sounds",
