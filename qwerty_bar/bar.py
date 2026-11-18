@@ -442,7 +442,7 @@ class WordBar:
         self.root.after(180, go)
 
     def step(self, delta: int, silent: bool = False) -> None:
-        rolled = self.session.advance(delta)
+        rolled = self.session.advance(delta, loop_chapter=bool(self.store["loop_chapter"]))
         self.typed, self.error_at = "", -1
         if rolled and not silent and self.store["sound"]:
             audio.blip("chapter")
@@ -694,6 +694,7 @@ class WordBar:
             ("show_phonetic", "显示音标"),
             ("dictation", "默写模式（隐藏单词，Tab 切换）"),
             ("loop_word", "单词循环"),
+            ("loop_chapter", "章节循环"),
             ("pronounce", "新词出现时自动发音"),
             ("sound", "按键音效（敲击 / 对错提示）"),
         )
