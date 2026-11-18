@@ -10,7 +10,8 @@ from pathlib import Path
 
 from . import audio, winapi
 from .dicts import DictMeta, Session, download_dict, load_catalog, load_words
-from .store import DATA, Store
+from .paths import DATA
+from .store import Store
 
 DARK = {
     "bg": "#1c1c1c",
@@ -148,6 +149,9 @@ class WordBar:
         threading.Thread(target=audio.ensure_sounds, daemon=True).start()
         # Defer so the window is on screen before Youdao audio starts.
         self.root.after(200, self._announce_current)
+        if not any(m.downloaded for m in self.catalog):
+            self._flash("首次启动：正在下载默认词库…", 5000)
+            threading.Thread(target=self._bootstrap_dicts, daemon=True).start()
 
     def _bind(self) -> None:
         c = self.canvas
@@ -176,6 +180,25 @@ class WordBar:
             winapi.HotkeyListener(bindings).start()
 
     # ------------------------------------------------------------- dictionary
+
+    def _reload_catalog(self) -> None:
+        self.catalog = load_catalog()
+        self.by_id = {m.id: m for m in self.catalog}
+
+    def _bootstrap_dicts(self) -> None:
+        try:
+            import sys
+
+            from .paths import APP_ROOT, frozen as is_frozen
+
+            if not is_frozen():
+                sys.path.insert(0, str(APP_ROOT))
+            from fetch_dicts import ensure_defaults  # noqa: PLC0415
+
+            ids = ensure_defaults()
+            self.events.put(("bootstrapped", True, ids[0] if ids else ""))
+        except Exception as exc:  # noqa: BLE001
+            self.events.put(("bootstrapped", False, str(exc)))
 
     def _open_dictionary(self, dict_id: str, restore: bool = False) -> Session:
         meta = self.by_id.get(dict_id)
@@ -234,7 +257,7 @@ class WordBar:
         session = self.session
         word = session.current()
 
-        x = self._put(x, mid, f"{session.meta.name} chp.{session.chapter + 1}", self.f_meta, self.theme["meta"], "dict")
+        x = self._put(x, mid, f"{session.meta.name} {session.chapter_title()}", self.f_meta, self.theme["meta"], "dict")
         x += GAP
         x = self._put(
             x, mid, f"{session.index + 1}/{session.chapter_len}", self.f_meta, self.theme["progress"], "chapter"
@@ -575,7 +598,16 @@ class WordBar:
         for i in range(self.session.chapter_count):
             if i and i % 25 == 0:
                 menu.entryconfigure(menu.index("end"), columnbreak=1)
-            self._radio(menu, i == self.session.chapter, f"第 {i + 1} 章", lambda c=i: self.jump_chapter(c))
+            if self.session.titled:
+                theme = self.session.chapter_theme(i)
+                if theme and theme != self.session.chapter_theme(i - 1):
+                    if i:
+                        menu.add_separator()
+                    menu.add_command(label=theme, state="disabled")
+                label = self.session.chapter_title(i)
+            else:
+                label = f"第 {i + 1} 章"
+            self._radio(menu, i == self.session.chapter, label, lambda c=i: self.jump_chapter(c))
         return menu
 
     def _settings_open(self) -> bool:
@@ -979,6 +1011,18 @@ class WordBar:
                         self.switch_dictionary(dict_id)
                     else:
                         self._flash(f"下载失败：{msg}", 2500)
+                elif isinstance(event, tuple) and event[0] == "bootstrapped":
+                    _, ok, msg = event
+                    if ok:
+                        self._reload_catalog()
+                        dict_id = msg or self.store["dict_id"]
+                        self.session = self._open_dictionary(dict_id, restore=True)
+                        self._persist()
+                        self.render()
+                        self._announce_current()
+                        self._flash("词库已就绪")
+                    else:
+                        self._flash(f"词库下载失败：{msg}", 4000)
         except queue.Empty:
             pass
 
@@ -1009,6 +1053,8 @@ RUN_NAME = "QwertyBar"
 def _launch_command() -> str:
     import sys
 
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable)}"'
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     exe = pythonw if pythonw.exists() else Path(sys.executable)
     return f'"{exe}" "{Path(__file__).resolve().parent.parent / "run.pyw"}"'

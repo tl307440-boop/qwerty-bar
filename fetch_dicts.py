@@ -15,6 +15,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+from qwerty_bar.paths import DATA
+
 REPO = "RealKai42/qwerty-learner"
 BRANCH = "master"
 MIRRORS = (
@@ -23,8 +25,6 @@ MIRRORS = (
     f"https://gcore.jsdelivr.net/gh/{REPO}@{BRANCH}",
 )
 
-ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
 DICT_DIR = DATA / "dicts"
 CATALOG = DATA / "catalog.json"
 
@@ -40,6 +40,17 @@ _FIELD = {
     "language": r"language:\s*'([^']*)'",
     "languageCategory": r"languageCategory:\s*'([^']*)'",
 }
+
+
+def _log(msg: str, *, error: bool = False) -> None:
+    """print() can crash pythonw / a windowed PyInstaller build."""
+    try:
+        stream = sys.stderr if error else sys.stdout
+        if stream is None:
+            return
+        print(msg, file=stream)
+    except OSError:
+        pass
 
 
 def download(path: str, timeout: int = 60) -> bytes:
@@ -93,7 +104,7 @@ def refresh_catalog() -> list[dict]:
     if not entries:
         raise RuntimeError("parsed 0 dictionaries; upstream format may have changed")
     CATALOG.write_text(json.dumps(entries, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"catalog: {len(entries)} dictionaries -> {CATALOG}")
+    _log(f"catalog: {len(entries)} dictionaries -> {CATALOG}")
     return entries
 
 
@@ -101,12 +112,12 @@ def fetch_dict(entry: dict, force: bool = False) -> Path:
     DICT_DIR.mkdir(parents=True, exist_ok=True)
     target = DICT_DIR / entry["file"]
     if target.exists() and not force:
-        print(f"  skip {entry['id']:<24} (already present)")
+        _log(f"  skip {entry['id']:<24} (already present)")
         return target
     raw = download(f"public{entry['url']}")
     words = json.loads(raw.decode("utf-8"))
     target.write_bytes(raw)
-    print(f"  got  {entry['id']:<24} {len(words):>5} words  {entry['name']}")
+    _log(f"  got  {entry['id']:<24} {len(words):>5} words  {entry['name']}")
     return target
 
 
@@ -134,6 +145,25 @@ def main(argv: list[str]) -> int:
             except Exception as exc:  # noqa: BLE001 - keep going on a single failure
                 print(f"  FAIL {wid}: {exc}", file=sys.stderr)
     return 0
+
+
+def ensure_defaults() -> list[str]:
+    """Make sure catalog + default word lists exist. Used by the frozen client."""
+    if not CATALOG.exists():
+        refresh_catalog()
+    entries = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {e["id"]: e for e in entries}
+    got: list[str] = []
+    for wid in DEFAULT_DICTS:
+        entry = by_id.get(wid)
+        if entry is None:
+            continue
+        target = DICT_DIR / entry["file"]
+        if not target.exists():
+            fetch_dict(entry)
+        if target.exists():
+            got.append(wid)
+    return got
 
 
 if __name__ == "__main__":

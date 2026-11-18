@@ -7,6 +7,7 @@ import sys
 
 from . import winapi
 from .bar import SHOW_FLAG, WordBar
+from .paths import ensure_layout
 
 MUTEX_NAME = "Global\\QwertyBarSingleInstance"
 ERROR_ALREADY_EXISTS = 183
@@ -24,6 +25,7 @@ def claim_single_instance() -> bool:
 
 
 def main() -> int:
+    ensure_layout()
     if not claim_single_instance():
         return 0
     winapi.enable_dpi_awareness()

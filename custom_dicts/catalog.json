@@ -1,0 +1,13 @@
+[
+ {
+  "id": "cet6_core",
+  "name": "CET-6 核心词汇",
+  "description": "六级词汇 语法 写作 翻译讲义·核心篇-主题词汇（20 组，按 List 分组）",
+  "category": "中国考试",
+  "url": "/dicts/CET6_Core.json",
+  "length": 700,
+  "language": "en",
+  "languageCategory": "en",
+  "file": "CET6_Core.json"
+ }
+]
